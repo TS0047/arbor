@@ -1,7 +1,8 @@
-import { Download, FilePlus, FolderOpen, MessagesSquare, Network, PanelRight, Settings, Upload } from 'lucide-react'
+import { Columns2, Download, FilePlus, FolderOpen, MessagesSquare, Network, PanelRight, Settings, Upload } from 'lucide-react'
 import { useStore } from '../store'
 import { downloadGraph, pickGraphFile, saveGraph } from '../lib/persist'
 import { cx } from '../lib/util'
+import { useShownView } from '../lib/view'
 
 const st = useStore.getState
 
@@ -37,7 +38,7 @@ export function TopBar() {
   const modelCount = useStore((s) => s.models.length)
   const inspectorOpen = useStore((s) => s.inspectorOpen)
   const nodeCount = useStore((s) => s.rfNodes.length)
-  const view = useStore((s) => s.view)
+  const view = useShownView()
 
   return (
     <header className="topbar">
@@ -74,6 +75,15 @@ export function TopBar() {
           aria-selected={view === 'canvas'}
         >
           <Network size={14} /> Map
+        </button>
+        <button
+          className={cx('seg-split', view === 'split' && 'on')}
+          onClick={() => st().setView('split')}
+          title="Split: map and thread side by side (Ctrl+\)"
+          role="tab"
+          aria-selected={view === 'split'}
+        >
+          <Columns2 size={14} /> Split
         </button>
       </div>
       <button className={cx('status-pill', ollama)} onClick={() => st().setModal('models')} title="Local models">

@@ -1,8 +1,9 @@
 import { useEffect, useMemo, useRef } from 'react'
-import { FileUp, GitBranch, Network, ReceiptText } from 'lucide-react'
+import { Columns2, FileUp, GitBranch, Network, ReceiptText } from 'lucide-react'
 import { useStore } from '../store'
 import { contextFor, transcriptOf } from '../lib/context'
 import { snippet } from '../lib/util'
+import { useShownView } from '../lib/view'
 import { importGraphFlow } from './TopBar'
 import { TurnView } from './TurnView'
 
@@ -17,6 +18,7 @@ export function ThreadPane() {
   const selection = useStore((s) => s.selection)
   const contextIds = useStore((s) => s.contextIds)
   const draft = useStore((s) => s.draft)
+  const view = useShownView()
   const endRef = useRef<HTMLDivElement>(null)
   const scrollRef = useRef<HTMLDivElement>(null)
 
@@ -89,9 +91,21 @@ export function ThreadPane() {
         <span className="grow" />
         {selection.length > 1 && <span className="hint-chip">merge preview · {selection.length} branches</span>}
         {node?.status === 'streaming' && <span className="hint-chip live">generating…</span>}
-        <button className="btn ghost small" onClick={() => st().setView('canvas')} title="Open the graph map">
-          <Network size={14} /> Map
-        </button>
+        {view !== 'split' && (
+          <>
+            <button className="btn ghost small" onClick={() => st().setView('canvas')} title="Open the graph map">
+              <Network size={14} /> Map
+            </button>
+            <button
+              className="icon-btn split-open"
+              onClick={() => st().setView('split')}
+              title="Open the map beside the thread (Ctrl+\)"
+              aria-label="Open the map beside the thread"
+            >
+              <Columns2 size={15} />
+            </button>
+          </>
+        )}
       </div>
       <div className="thread-scroll" ref={scrollRef}>
         <div className="thread-inner">

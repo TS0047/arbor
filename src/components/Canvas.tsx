@@ -73,7 +73,9 @@ function Viewport() {
   useEffect(() => {
     if (!fitReq || !nodesReady) return
     // Extra bottom padding keeps the floating composer from covering the lowest nodes.
-    const padding = { top: '50px', left: '50px', right: '50px', bottom: '200px' } as const
+    // In the split the composer lives under the thread instead, so the map needs none.
+    const bottom = st().view === 'split' ? '50px' : '200px'
+    const padding = { top: '50px', left: '50px', right: '50px', bottom } as const
     const t = setTimeout(() => fitView({ padding, duration: 400, maxZoom: 1 }), 30)
     return () => clearTimeout(t)
   }, [fitReq, nodesReady, fitView])

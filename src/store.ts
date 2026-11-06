@@ -28,6 +28,37 @@ function loadSettings(): AppSettings {
   }
 }
 
+/** Which surface is open, and how the side-by-side split is arranged. Remembered per browser. */
+const LAYOUT_KEY = 'arbor:layout'
+export interface Layout {
+  view: View
+  split: number // width of the LEFT pane, as a fraction of the stage
+  swapped: boolean // false: Map | Thread. true: Thread | Map
+}
+const DEFAULT_LAYOUT: Layout = { view: 'thread', split: 0.5, swapped: false }
+export const clampSplit = (r: number) => Math.min(0.8, Math.max(0.2, r))
+
+function loadLayout(): Layout {
+  try {
+    const l = JSON.parse(localStorage.getItem(LAYOUT_KEY) ?? '{}') as Partial<Layout>
+    return {
+      view: l.view === 'canvas' || l.view === 'split' ? l.view : 'thread',
+      split: typeof l.split === 'number' && Number.isFinite(l.split) ? clampSplit(l.split) : DEFAULT_LAYOUT.split,
+      swapped: l.swapped === true,
+    }
+  } catch {
+    return { ...DEFAULT_LAYOUT }
+  }
+}
+
+function saveLayout(l: Layout) {
+  try {
+    localStorage.setItem(LAYOUT_KEY, JSON.stringify(l))
+  } catch {
+    /* private mode / quota: layout just isn't remembered */
+  }
+}
+
 export function emptyGraph(): Graph {
   const now = Date.now()
   return { id: uid(), title: DEFAULT_TITLE, nodes: {}, systemPrompt: '', createdAt: now, updatedAt: now, version: 1 }
@@ -46,7 +77,7 @@ const toRf = (n: GNode, selected = false): Node => ({
 
 export type Modal = null | 'library' | 'settings' | 'dialogue' | 'models'
 export type Tab = 'thread' | 'receipt' | 'node'
-export type View = 'thread' | 'canvas'
+export type View = 'thread' | 'canvas' | 'split'
 type ToastAction = { label: string; run: () => void }
 type Toast = { id: number; text: string; kind: 'info' | 'error'; action?: ToastAction }
 
@@ -74,6 +105,8 @@ export interface State {
   contextIds: string[] // ordered: what the next message continues from (merge branch letters follow this order)
   pathSet: Set<string>
   view: View
+  splitRatio: number
+  splitSwapped: boolean
   structVersion: number
   settings: AppSettings
   models: ModelInfo[]
@@ -107,6 +140,12 @@ export interface State {
   onNodesChange(changes: NodeChange[]): void
   select(ids: string[]): void
   setView(v: View): void
+  /** Thread-only <-> side by side (Ctrl+\, like VS Code's "split editor"). */
+  toggleSplit(): void
+  /** Resize the split. `persist` writes it to localStorage (on drag end, not every pointer move). */
+  setSplitRatio(r: number, persist?: boolean): void
+  /** Swap which side the Map and Thread are on; each keeps its width. */
+  swapSplit(): void
   /** Make the peeked node(s) the send target. */
   adoptSelection(ids?: string[]): void
   /** Read a node and continue from it in one click (explicit intent). */
@@ -193,7 +232,7 @@ export const useStore = create<State>()((set, get) => {
     selection: [],
     contextIds: [],
     pathSet: new Set(),
-    view: 'thread',
+    ...(({ view, split, swapped }) => ({ view, splitRatio: split, splitSwapped: swapped }))(loadLayout()),
     structVersion: 0,
     settings: loadSettings(),
     models: [],
@@ -328,7 +367,28 @@ export const useStore = create<State>()((set, get) => {
       })
     },
 
-    setView: (view) => set({ view }),
+    setView(view) {
+      set({ view })
+      const s = get()
+      saveLayout({ view, split: s.splitRatio, swapped: s.splitSwapped })
+    },
+
+    toggleSplit() {
+      get().setView(get().view === 'split' ? 'thread' : 'split')
+    },
+
+    setSplitRatio(r, persist = false) {
+      const split = clampSplit(r)
+      set({ splitRatio: split })
+      if (persist) saveLayout({ view: get().view, split, swapped: get().splitSwapped })
+    },
+
+    swapSplit() {
+      const s = get()
+      const next = { view: s.view, split: clampSplit(1 - s.splitRatio), swapped: !s.splitSwapped }
+      set({ splitRatio: next.split, splitSwapped: next.swapped })
+      saveLayout(next)
+    },
 
     adoptSelection(ids) {
       const next = ids ?? get().selection

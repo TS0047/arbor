@@ -6,7 +6,9 @@ import { cx } from './lib/util'
 import { TopBar } from './components/TopBar'
 import { Canvas } from './components/Canvas'
 import { ThreadPane } from './components/ThreadPane'
+import { SplitView } from './components/SplitView'
 import { Composer } from './components/Composer'
+import { useShownView } from './lib/view'
 import { Inspector } from './components/Inspector'
 import { DialogueModal } from './components/modals/DialogueModal'
 import { LibraryModal } from './components/modals/LibraryModal'
@@ -71,6 +73,12 @@ function useShortcuts() {
         return
       }
       if (st().modal) return
+      // Ctrl+\ toggles the side-by-side split, as in VS Code. Works while typing too.
+      if ((e.ctrlKey || e.metaKey) && (e.code === 'Backslash' || e.key === '\\')) {
+        e.preventDefault()
+        st().toggleSplit()
+        return
+      }
       if (typing) {
         if (e.key === 'Escape') target.blur()
         return
@@ -155,7 +163,7 @@ function useGraphDrop() {
 export default function App() {
   const modal = useStore((s) => s.modal)
   const inspectorOpen = useStore((s) => s.inspectorOpen)
-  const view = useStore((s) => s.view)
+  const view = useShownView()
   const nodeCount = useStore((s) => s.rfNodes.length)
   const drop = useGraphDrop()
   useBoot()
@@ -168,14 +176,20 @@ export default function App() {
       <div className={cx('main', drop.over && 'dropping')} {...drop.bind}>
         {drop.over && <div className="drop-overlay">Drop an .arbor.json to import it</div>}
         <div className="stage">
-          {view === 'canvas' ? (
-            <ReactFlowProvider>
-              <Canvas />
-            </ReactFlowProvider>
+          {view === 'split' ? (
+            <SplitView />
           ) : (
-            <ThreadPane />
+            <>
+              {view === 'canvas' ? (
+                <ReactFlowProvider>
+                  <Canvas />
+                </ReactFlowProvider>
+              ) : (
+                <ThreadPane />
+              )}
+              <Composer />
+            </>
           )}
-          <Composer />
         </div>
         {inspectorOpen && nodeCount > 0 && <Inspector />}
       </div>
