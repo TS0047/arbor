@@ -1,4 +1,4 @@
-import { Download, FilePlus, FolderOpen, PanelRight, Settings, Upload } from 'lucide-react'
+import { Download, FilePlus, FolderOpen, MessagesSquare, Network, PanelRight, Settings, Upload } from 'lucide-react'
 import { useStore } from '../store'
 import { downloadGraph, pickGraphFile, saveGraph } from '../lib/persist'
 import { cx } from '../lib/util'
@@ -37,6 +37,7 @@ export function TopBar() {
   const modelCount = useStore((s) => s.models.length)
   const inspectorOpen = useStore((s) => s.inspectorOpen)
   const nodeCount = useStore((s) => s.rfNodes.length)
+  const view = useStore((s) => s.view)
 
   return (
     <header className="topbar">
@@ -55,6 +56,26 @@ export function TopBar() {
         {nodeCount === 0 ? 'Empty' : saveState === 'saved' ? 'Saved' : saveState === 'saving' ? 'Saving…' : 'Unsaved'}
       </span>
       <span className="grow" />
+      <div className="seg view-seg" role="tablist" aria-label="View">
+        <button
+          className={cx(view === 'thread' && 'on')}
+          onClick={() => st().setView('thread')}
+          title="Thread: read the conversation (default)"
+          role="tab"
+          aria-selected={view === 'thread'}
+        >
+          <MessagesSquare size={14} /> Thread
+        </button>
+        <button
+          className={cx(view === 'canvas' && 'on')}
+          onClick={() => st().setView('canvas')}
+          title="Map: see and rearrange the whole graph"
+          role="tab"
+          aria-selected={view === 'canvas'}
+        >
+          <Network size={14} /> Map
+        </button>
+      </div>
       <button className={cx('status-pill', ollama)} onClick={() => st().setModal('models')} title="Local models">
         <span className="dot" />
         <span className="label">

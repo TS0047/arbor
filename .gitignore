@@ -13,3 +13,6 @@ Thumbs.db
 # logs
 npm-debug.log*
 *.log
+
+# local npm cache used in this environment
+.npm-cache/

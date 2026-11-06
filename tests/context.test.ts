@@ -1,6 +1,6 @@
-﻿import assert from 'node:assert/strict'
+import assert from 'node:assert/strict'
 // Run with: npm test   (Node 22.6+ runs TypeScript directly)
-import { contextNodeSet, deletionClosure, requestFor } from '../src/lib/context.ts'
+import { compileFor, contextAudit, contextNodeSet, deletionClosure, requestFor } from '../src/lib/context.ts'
 
 let t = 0
 const node = (id: string, parents: string[], extra: Record<string, unknown> = {}) => ({
@@ -110,6 +110,80 @@ const show = (msgs: any[]) => msgs.map((m) => `${m.role}: ${m.content.replace(/\
   )
   assert.deepEqual([...deletionClosure(g, ['b'])].sort(), ['b', 'd'])
   console.log('âœ“ deletion closure keeps merges with a surviving parent')
+}
+
+// 8. a compiled request reports the nodes that actually reach the model
+{
+  const g = graph(
+    node('a', [], { prompt: 'pA', response: 'rA' }),
+    node('b', ['a'], { prompt: 'pB', response: 'rB' }),
+    node('c', ['b'], { prompt: 'pC', status: 'pending' }),
+  )
+  const compiled = compileFor(g, 'c')
+  assert.deepEqual(compiled.messages, requestFor(g, 'c'))
+  assert.deepEqual(compiled.nodeIds, ['a', 'b'])
+  assert.ok(!compiled.nodeIds.includes('c'), 'a node is not its own context')
+  console.log('âœ“ compileFor: messages + source nodes')
+}
+
+// 9. merge receipts name every branch tail, and the new node is not a source
+{
+  const g = graph(
+    node('a', [], { prompt: 'pA', response: 'rA' }),
+    node('b', ['a'], { prompt: 'pB', response: 'rB' }),
+    node('c', ['a'], { prompt: 'pC', response: 'rC' }),
+    node('m', ['b', 'c'], { prompt: 'compare', status: 'pending' }),
+  )
+  const compiled = compileFor(g, 'm')
+  assert.deepEqual(compiled.nodeIds, ['a', 'b', 'c'])
+  assert.equal(compiled.messages.length, 3)
+  console.log('âœ“ merge receipt lists shared prefix + both tails')
+}
+
+// 10. checkpoint receipt replaces ancestors with the summary node
+{
+  const g = graph(
+    node('a', [], { prompt: 'pA', response: 'rA' }),
+    node('b', ['a'], { prompt: 'pB', response: 'rB' }),
+    node('s', ['b'], { kind: 'summary', response: 'SUM' }),
+    node('c', ['s'], { prompt: 'pC', status: 'pending' }),
+  )
+  assert.deepEqual(compileFor(g, 'c').nodeIds, ['s'])
+  const audit = contextAudit(g, ['c'])
+  assert.deepEqual(audit.included, ['s', 'c'])
+  assert.deepEqual(
+    audit.excluded.map((e) => `${e.id}:${e.reason}`).sort(),
+    ['a:checkpointed', 'b:checkpointed'],
+  )
+  // downstream nodes are "comes later", not "different branch"
+  const fromSummary = contextAudit(g, ['s'])
+  assert.equal(fromSummary.excluded.find((e) => e.id === 'c')?.reason, 'later')
+  console.log('âœ“ checkpoint receipt + excluded reasons')
+}
+
+// 11. audit explains every exclusion, and agrees with the compiled request
+{
+  const g = graph(
+    node('a', [], { prompt: 'pA', response: 'rA' }),
+    node('b', ['a'], { prompt: 'pB', response: 'rB', muted: true }),
+    node('c', ['b'], { prompt: 'pC', status: 'pending' }),
+    node('d', ['a'], { prompt: 'pD', response: 'rD' }),
+    node('e', [], { status: 'pending' }),
+    node('s', ['a'], { kind: 'summary', response: 'SUM' }),
+    node('f', ['s'], { prompt: 'pF', status: 'pending' }),
+  )
+  const audit = contextAudit(g, ['c'])
+  assert.deepEqual(audit.included, ['a', 'c'])
+  assert.deepEqual(compileFor(g, 'c').nodeIds, ['a'])
+  const byId = Object.fromEntries(audit.excluded.map((e) => [e.id, e.reason]))
+  assert.equal(byId.b, 'muted', 'muted nodes are on the path but skipped')
+  assert.equal(byId.d, 'branch')
+  assert.equal(byId.e, 'empty')
+  assert.equal(byId.s, 'branch')
+  assert.equal(byId.f, 'branch')
+  // every node is either in or accounted for
+  assert.equal(audit.included.length + audit.excluded.length, Object.keys(g.nodes).length)
+  console.log('âœ“ audit: muted / branch / empty reasons, nothing unexplained')
 }
 console.log('all context tests passed')
 

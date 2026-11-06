@@ -16,6 +16,25 @@ export interface NodeStats {
   ms?: number
 }
 
+export type ExclusionReason = 'muted' | 'checkpointed' | 'later' | 'empty' | 'branch'
+
+export interface Exclusion {
+  id: string
+  reason: ExclusionReason
+}
+
+/**
+ * A snapshot of the exact request a node was generated from. Stored so the
+ * receipt stays honest after the graph is edited: it is what the model saw,
+ * not what the current graph would compile to.
+ */
+export interface Receipt {
+  messages: ChatMessage[]
+  nodeIds: string[]
+  excluded: Exclusion[]
+  at: number
+}
+
 /**
  * One node = one exchange. `prompt` is the human's words (absent for pure
  * agent turns), `response` is the model's. Making the exchange the unit keeps
@@ -36,6 +55,7 @@ export interface GNode {
   status: NodeStatus
   error?: string
   stats?: NodeStats
+  receipt?: Receipt // what this answer was actually generated from
   position: { x: number; y: number }
   createdAt: number
 }
@@ -74,6 +94,7 @@ export interface Turn {
   model?: string
   agent?: string
   kind?: 'merge' | 'summary'
+  sources?: string[] // nodes packed into a synthetic turn (merge tails)
 }
 
 export interface ChatMessage {

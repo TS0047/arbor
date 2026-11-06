@@ -1,4 +1,4 @@
-import { useEffect, useMemo } from 'react'
+import { useEffect, useMemo, useState } from 'react'
 import {
   Background,
   BackgroundVariant,
@@ -10,10 +10,10 @@ import {
   useReactFlow,
   type Edge,
 } from '@xyflow/react'
-import { GitBranch, GitMerge, Layers, LayoutGrid, Maximize, MessagesSquare } from 'lucide-react'
+import { GitBranch, GitMerge, Layers, LayoutGrid, Maximize, MessagesSquare, Search } from 'lucide-react'
 import { NODE_W, useStore } from '../store'
 import { branchLabel } from '../lib/context'
-import { modelColor } from '../lib/util'
+import { modelColor, snippet } from '../lib/util'
 import { ChatNode } from './ChatNode'
 
 const nodeTypes = { chat: ChatNode }
@@ -81,22 +81,81 @@ function Viewport() {
   return null
 }
 
+function SearchBox() {
+  const graph = useStore((s) => s.graph)
+  const [q, setQ] = useState('')
+  const [open, setOpen] = useState(false)
+  const needle = q.trim().toLowerCase()
+  const hits = useMemo(() => {
+    if (!needle) return []
+    return Object.values(graph.nodes)
+      .filter((n) => `${n.prompt ?? ''} ${n.response ?? ''} ${n.model ?? ''}`.toLowerCase().includes(needle))
+      .slice(0, 8)
+  }, [graph.nodes, needle])
+
+  const go = (id: string) => {
+    st().select([id])
+    st().focus(id)
+    setOpen(false)
+    setQ('')
+  }
+
+  return (
+    <div className="canvas-search">
+      <label>
+        <Search size={13} />
+        <input
+          value={q}
+          placeholder="Find a node…"
+          onChange={(e) => {
+            setQ(e.target.value)
+            setOpen(true)
+          }}
+          onFocus={() => setOpen(true)}
+          onBlur={() => setTimeout(() => setOpen(false), 120)}
+          onKeyDown={(e) => {
+            if (e.key === 'Enter' && hits[0]) go(hits[0].id)
+            if (e.key === 'Escape') {
+              setQ('')
+              setOpen(false)
+            }
+          }}
+        />
+      </label>
+      {open && !!needle && (
+        <div className="search-pop">
+          {hits.length === 0 && <div className="search-empty">No node matches “{q}”.</div>}
+          {hits.map((n) => (
+            <button key={n.id} className="search-hit" onMouseDown={() => go(n.id)}>
+              <span className="search-hit-text">{snippet(n.prompt || n.response || 'empty node', 56)}</span>
+              <span className="search-hit-meta">{n.kind === 'summary' ? 'checkpoint' : n.parents.length > 1 ? 'merge' : ''}</span>
+            </button>
+          ))}
+        </div>
+      )}
+    </div>
+  )
+}
+
 function EmptyState() {
   return (
     <div className="empty-state">
       <h2>Conversations as a graph</h2>
-      <p>Type below to start. Every exchange becomes a node, and the highlighted path is exactly what the model reads.</p>
+      <p>
+        Type below to start. Every exchange becomes a node, and the highlighted path is exactly what the model reads.
+        Click a node to read it — clicking never changes what gets sent.
+      </p>
       <ul>
         <li>
           <GitBranch size={15} />
           <span>
-            <b>Branch</b>: click any node and type. The old path stays intact.
+            <b>Branch</b>: use “Continue from this node”, then type. The old path stays intact.
           </span>
         </li>
         <li>
           <GitMerge size={15} />
           <span>
-            <b>Merge</b>: Ctrl/Shift-click two nodes, then ask about both.
+            <b>Merge</b>: Ctrl/Shift-click two nodes, then press “Use these” in the composer.
           </span>
         </li>
         <li>
@@ -161,6 +220,7 @@ export function Canvas() {
         />
         <Controls showInteractive={false} position="bottom-left" />
         <Panel position="top-left" className="canvas-tools">
+          <SearchBox />
           <button className="btn ghost small" onClick={() => st().tidy()} title="Re-layout the whole graph">
             <LayoutGrid size={14} /> Tidy
           </button>

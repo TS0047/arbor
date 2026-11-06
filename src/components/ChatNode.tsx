@@ -23,7 +23,8 @@ function IconBtn(props: { title: string; onClick: () => void; children: ReactNod
 function ChatNodeImpl({ id, selected }: NodeProps) {
   const n = useStore((s) => s.graph.nodes[id])
   const inPath = useStore((s) => s.pathSet.has(id))
-  const dim = useStore((s) => s.selection.length > 0 && !s.pathSet.has(id))
+  const dim = useStore((s) => s.contextIds.length > 0 && !s.pathSet.has(id))
+  const inContext = useStore((s) => s.contextIds.includes(id))
   const mergeIdx = useStore((s) => (s.selection.length > 1 ? s.selection.indexOf(id) : -1))
   if (!n) return null
 
@@ -71,6 +72,11 @@ function ChatNodeImpl({ id, selected }: NodeProps) {
           </span>
         )}
         {n.muted && <span className="tag">muted</span>}
+        {inContext && (
+          <span className="tag tag-target" title="The next message continues from here">
+            target
+          </span>
+        )}
         {n.stale && (
           <span className="tag tag-stale" title="Something upstream changed after this reply was generated">
             stale
@@ -124,7 +130,7 @@ function ChatNodeImpl({ id, selected }: NodeProps) {
       </div>
 
       <footer className="gnode-actions nodrag">
-        <IconBtn title="Branch from here" onClick={() => (st().select([id]), st().focusComposer())}>
+        <IconBtn title="Read this node and continue from it" onClick={() => st().continueFrom(id)}>
           <GitBranch size={14} />
         </IconBtn>
         {busy ? (

@@ -1,4 +1,4 @@
-import type { Agent, ChatMessage, GNode, Graph, Turn } from '../types'
+import type { Agent, ChatMessage, Exclusion, ExclusionReason, GNode, Graph, Turn } from '../types'
 
 /**
  * Context assembly — the core of the app.
@@ -84,6 +84,11 @@ export function contextFor(g: Graph, parentIds: string[], memo: Memo = new Map()
 
   const prefix = lists[0].slice(0, k)
   if (!blocks.length) return prefix
+  const sources = [
+    ...new Set(
+      lists.flatMap((l) => l.slice(k).flatMap((t) => [t.nodeId, ...(t.sources ?? [])])).filter(Boolean),
+    ),
+  ]
   return [
     ...prefix,
     {
@@ -95,6 +100,7 @@ export function contextFor(g: Graph, parentIds: string[], memo: Memo = new Map()
         `From here the conversation split into ${blocks.length} parallel branches. ` +
         `Treat them as separate explorations of the same starting point, not as one sequence.\n\n` +
         blocks.join('\n\n'),
+      sources,
     },
   ]
 }
@@ -141,16 +147,36 @@ export const SUMMARY_INSTRUCTION =
   'Keep every decision, fact, number, name, code identifier and open question. ' +
   'Use compact bullet points grouped by topic. No preamble, no commentary.'
 
-/** The exact request for generating node `id`. */
-export function requestFor(g: Graph, id: string): ChatMessage[] {
+/** Nodes whose own words reach the model, in reading order. Synthetic turns list their sources. */
+export function turnNodeIds(turns: Turn[], self = ''): string[] {
+  const out: string[] = []
+  const seen = new Set<string>()
+  for (const t of turns) {
+    for (const id of [t.nodeId, ...(t.sources ?? [])]) {
+      if (!id || id === self || seen.has(id)) continue
+      seen.add(id)
+      out.push(id)
+    }
+  }
+  return out
+}
+
+export interface Compiled {
+  messages: ChatMessage[]
+  turns: Turn[]
+  nodeIds: string[]
+}
+
+/** Everything the app needs to know about one request: what is sent, and which nodes made it. */
+export function compileFor(g: Graph, id: string): Compiled {
   const n = g.nodes[id]
-  if (!n) return []
+  if (!n) return { messages: [], turns: [], nodeIds: [] }
   const ctx = contextFor(g, n.parents, new Map(), id)
 
   if (n.kind === 'summary') {
     const msgs = toMessages(ctx, {}, g.systemPrompt)
     push(msgs, 'user', SUMMARY_INSTRUCTION)
-    return msgs
+    return { messages: msgs, turns: ctx, nodeIds: turnNodeIds(ctx, id) }
   }
 
   const turns: Turn[] = n.prompt?.trim()
@@ -161,7 +187,65 @@ export function requestFor(g: Graph, id: string): ChatMessage[] {
   const last = msgs[msgs.length - 1]
   if (!last || last.role !== 'user')
     push(msgs, 'user', n.agent ? `[Moderator]: Your turn, ${n.agent.name}.` : 'Continue.')
-  return msgs
+  return { messages: msgs, turns, nodeIds: turnNodeIds(turns, id) }
+}
+
+/** The exact request for generating node `id`. */
+export function requestFor(g: Graph, id: string): ChatMessage[] {
+  return compileFor(g, id).messages
+}
+
+export const EXCLUSION_LABEL: Record<ExclusionReason, string> = {
+  muted: 'Muted',
+  checkpointed: 'Replaced by checkpoint',
+  later: 'Comes later',
+  empty: 'Empty',
+  branch: 'Different branch',
+}
+
+export const EXCLUSION_HINT: Record<ExclusionReason, string> = {
+  muted: 'On this path, but muted — it stays on the canvas and is skipped here.',
+  checkpointed: 'A checkpoint above it stands in for this part of the thread.',
+  later: 'Downstream of where you are continuing from — not history yet.',
+  empty: 'No prompt or reply yet.',
+  branch: 'Not an ancestor of where you are continuing from.',
+}
+
+/**
+ * Split every node into "reaches the model" and "does not, and why".
+ * The reasons are derived from the graph, so the panel can answer
+ * "why didn't it know about X?" without guessing.
+ */
+export function contextAudit(g: Graph, ids: string[]): { included: string[]; excluded: Exclusion[] } {
+  const turns = contextFor(g, ids)
+  const included = turnNodeIds(turns)
+  const inSet = new Set(included)
+  const onPath = contextNodeSet(g, ids)
+
+  const checkpointed = new Set<string>()
+  for (const id of included) {
+    const n = g.nodes[id]
+    if (n && isCheckpoint(n)) for (const a of contextNodeSet(g, n.parents)) if (!inSet.has(a)) checkpointed.add(a)
+  }
+
+  const downstream = new Set<string>()
+  for (const id of ids) for (const d of descendantsOf(g, id)) downstream.add(d)
+
+  const rank: Record<ExclusionReason, number> = { muted: 0, checkpointed: 1, later: 2, empty: 3, branch: 4 }
+  const excluded: Exclusion[] = []
+  for (const n of Object.values(g.nodes)) {
+    if (inSet.has(n.id)) continue
+    let reason: ExclusionReason
+    if (onPath.has(n.id) && n.muted) reason = 'muted'
+    else if (checkpointed.has(n.id)) reason = 'checkpointed'
+    else if (!n.prompt?.trim() && !n.response?.trim()) reason = 'empty'
+    else if (onPath.has(n.id)) reason = 'empty'
+    else if (downstream.has(n.id)) reason = 'later'
+    else reason = 'branch'
+    excluded.push({ id: n.id, reason })
+  }
+  excluded.sort((a, b) => rank[a.reason] - rank[b.reason] || a.id.localeCompare(b.id))
+  return { included, excluded }
 }
 
 /** What the composer's next message would send, for the token meter and Context tab. */

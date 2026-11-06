@@ -9,6 +9,7 @@
     "build": "tsc --noEmit -p tsconfig.json && vite build",
     "typecheck": "tsc --noEmit -p tsconfig.json",
     "test": "node tests/context.test.ts",
+    "test:live": "node tests/live.test.ts",
     "preview": "vite preview"
   },
   "dependencies": {

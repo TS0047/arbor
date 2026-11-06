@@ -2,7 +2,7 @@ import { create } from 'zustand'
 import { applyNodeChanges, type Node, type NodeChange } from '@xyflow/react'
 import type { AppSettings, DialogueConfig, GNode, Graph } from './types'
 import { listModels, streamChat, type ModelInfo } from './lib/ollama'
-import { contextNodeSet, deletionClosure, descendantsOf, requestFor } from './lib/context'
+import { compileFor, contextAudit, contextNodeSet, deletionClosure, descendantsOf } from './lib/context'
 import { saveGraph } from './lib/persist'
 import { tidyPositions } from './lib/layout'
 import { snippet, splitThink, stripSelfPrefix, uid } from './lib/util'
@@ -45,7 +45,8 @@ const toRf = (n: GNode, selected = false): Node => ({
 })
 
 export type Modal = null | 'library' | 'settings' | 'dialogue' | 'models'
-export type Tab = 'thread' | 'context' | 'node'
+export type Tab = 'thread' | 'receipt' | 'node'
+export type View = 'thread' | 'canvas'
 type ToastAction = { label: string; run: () => void }
 type Toast = { id: number; text: string; kind: 'info' | 'error'; action?: ToastAction }
 
@@ -69,8 +70,10 @@ interface NewNode {
 export interface State {
   graph: Graph
   rfNodes: Node[]
-  selection: string[] // ordered: merge branch letters follow click order
+  selection: string[] // what you are reading (peek); never changes what gets sent
+  contextIds: string[] // ordered: what the next message continues from (merge branch letters follow this order)
   pathSet: Set<string>
+  view: View
   structVersion: number
   settings: AppSettings
   models: ModelInfo[]
@@ -103,6 +106,16 @@ export interface State {
 
   onNodesChange(changes: NodeChange[]): void
   select(ids: string[]): void
+  setView(v: View): void
+  /** Make the peeked node(s) the send target. */
+  adoptSelection(ids?: string[]): void
+  /** Read a node and continue from it in one click (explicit intent). */
+  continueFrom(id: string): void
+  /** Add an off-path node to the send target so the next message merges it in. */
+  mergeIntoContext(id: string): void
+  /** Reorder merge branches (they are labelled A, B, … in this order). */
+  moveContext(id: string, delta: number): void
+  openReceipt(id: string): void
   focus(id: string): void
   focusComposer(): void
   requestFit(): void
@@ -126,6 +139,12 @@ const controllers = new Map<string, AbortController>()
 let dialogueCancelled = false
 let toastSeq = 0
 
+/** The "why not" half of a new node's receipt, frozen at generation time. The node itself is never "excluded" from its own answer. */
+const auditExcluded = (g: Graph, id: string) => {
+  const n = g.nodes[id]
+  return n ? contextAudit(g, n.parents).excluded.filter((e) => e.id !== id) : []
+}
+
 export const useStore = create<State>()((set, get) => {
   const patch = (id: string, p: Partial<GNode>) =>
     set((s) => {
@@ -141,7 +160,7 @@ export const useStore = create<State>()((set, get) => {
       return { graph: { ...s.graph, nodes } }
     })
 
-  const refreshPath = () => set((s) => ({ pathSet: contextNodeSet(s.graph, s.selection) }))
+  const refreshPath = () => set((s) => ({ pathSet: contextNodeSet(s.graph, s.contextIds) }))
 
   /** Below its parents, nudged right until it doesn't overlap anything. */
   const placeNode = (parents: string[]) => {
@@ -172,7 +191,9 @@ export const useStore = create<State>()((set, get) => {
     graph: emptyGraph(),
     rfNodes: [],
     selection: [],
+    contextIds: [],
     pathSet: new Set(),
+    view: 'thread',
     structVersion: 0,
     settings: loadSettings(),
     models: [],
@@ -232,6 +253,7 @@ export const useStore = create<State>()((set, get) => {
         graph: g,
         rfNodes: Object.values(g.nodes).map((n) => toRf(n)),
         selection: [],
+        contextIds: [],
         pathSet: new Set(),
         structVersion: s.structVersion + 1,
         fitReq: s.fitReq + 1,
@@ -285,10 +307,7 @@ export const useStore = create<State>()((set, get) => {
         s.rfNodes,
       )
       const next: Partial<State> = { rfNodes }
-      if (selChanged) {
-        next.selection = selection
-        next.pathSet = contextNodeSet(s.graph, selection)
-      }
+      if (selChanged) next.selection = selection
       if (dropped.length) {
         const nodes = { ...s.graph.nodes }
         for (const id of dropped) {
@@ -305,9 +324,44 @@ export const useStore = create<State>()((set, get) => {
       const want = new Set(ids)
       set({
         selection: ids,
-        pathSet: contextNodeSet(s.graph, ids),
         rfNodes: s.rfNodes.map((n) => (!!n.selected === want.has(n.id) ? n : { ...n, selected: want.has(n.id) })),
       })
+    },
+
+    setView: (view) => set({ view }),
+
+    adoptSelection(ids) {
+      const next = ids ?? get().selection
+      set((s) => ({ contextIds: next, pathSet: contextNodeSet(s.graph, next) }))
+    },
+
+    continueFrom(id) {
+      get().select([id])
+      get().adoptSelection([id])
+      get().focusComposer()
+    },
+
+    mergeIntoContext(id) {
+      const s = get()
+      if (!s.graph.nodes[id] || s.contextIds.includes(id)) return
+      const next = [...s.contextIds, id]
+      set({ contextIds: next, pathSet: contextNodeSet(s.graph, next) })
+      get().showToast('Added to context — the next message merges both branches.')
+    },
+
+    moveContext(id, delta) {
+      const s = get()
+      const i = s.contextIds.indexOf(id)
+      const j = i + delta
+      if (i < 0 || j < 0 || j >= s.contextIds.length) return
+      const next = [...s.contextIds]
+      ;[next[i], next[j]] = [next[j], next[i]]
+      set({ contextIds: next, pathSet: contextNodeSet(s.graph, next) })
+    },
+
+    openReceipt(id) {
+      get().select([id])
+      set({ tab: 'receipt', inspectorOpen: true })
     },
 
     focus: (id) => set((s) => ({ focusReq: { id, n: (s.focusReq?.n ?? 0) + 1 } })),
@@ -361,11 +415,12 @@ export const useStore = create<State>()((set, get) => {
         get().showToast('Pick at least one installed model first.', 'error')
         return
       }
-      const parents = [...s.selection]
+      const parents = [...s.contextIds]
       // Several models selected = fan-out: one sibling branch per model.
       const ids = models.map((model) => get().addNode({ parents, prompt: text, model }))
       set({ draft: '' })
       get().select([ids[0]])
+      get().adoptSelection([ids[0]])
       get().focus(ids[0])
       for (const id of ids) void get().generate(id)
     },
@@ -381,8 +436,22 @@ export const useStore = create<State>()((set, get) => {
       controllers.get(id)?.abort()
       const ctrl = new AbortController()
       controllers.set(id, ctrl)
-      const messages = requestFor(s.graph, id)
-      patch(id, { status: 'streaming', response: '', thinking: undefined, error: undefined, stats: undefined, stale: false })
+      const compiled = compileFor(s.graph, id)
+      const messages = compiled.messages
+      patch(id, {
+        status: 'streaming',
+        response: '',
+        thinking: undefined,
+        error: undefined,
+        stats: undefined,
+        stale: false,
+        receipt: {
+          messages,
+          nodeIds: compiled.nodeIds,
+          excluded: auditExcluded(s.graph, id),
+          at: Date.now(),
+        },
+      })
 
       let raw = ''
       let thinking = ''
@@ -451,6 +520,7 @@ export const useStore = create<State>()((set, get) => {
       const model = s.settings.composerModels.find((m) => s.models.some((x) => x.name === m)) ?? src.model
       const nid = get().addNode({ parents: [id], kind: 'summary', model })
       get().select([nid])
+      get().adoptSelection([nid])
       get().focus(nid)
       void get().generate(nid)
     },
@@ -459,6 +529,7 @@ export const useStore = create<State>()((set, get) => {
       const n = get().graph.nodes[id]
       if (!n) return
       get().select(n.parents)
+      get().adoptSelection(n.parents)
       set({ draft: n.prompt ?? '' })
       get().focusComposer()
       get().showToast('Edit the prompt: sending creates a sibling branch, the original stays.')
@@ -481,11 +552,13 @@ export const useStore = create<State>()((set, get) => {
       }
       const graph = { ...s.graph, nodes, updatedAt: Date.now() }
       const selection = s.selection.filter((x) => !kill.has(x))
+      const contextIds = s.contextIds.filter((x) => !kill.has(x))
       set({
         graph,
         rfNodes: s.rfNodes.filter((n) => !kill.has(n.id)),
         selection,
-        pathSet: contextNodeSet(graph, selection),
+        contextIds,
+        pathSet: contextNodeSet(graph, contextIds),
         structVersion: s.structVersion + 1,
       })
       return {
@@ -514,7 +587,7 @@ export const useStore = create<State>()((set, get) => {
       set({
         graph,
         rfNodes: [...s.rfNodes, ...snap.rf.filter((n) => !present.has(n.id)).map((n) => ({ ...n, selected: false }))],
-        pathSet: contextNodeSet(graph, s.selection),
+        pathSet: contextNodeSet(graph, s.contextIds),
         structVersion: s.structVersion + 1,
       })
       return true
@@ -525,7 +598,7 @@ export const useStore = create<State>()((set, get) => {
       dialogueCancelled = false
       set({ dialogue: { turn: 0, total: cfg.turns }, lastDialogue: cfg, modal: null })
       const s = get()
-      let parents = [...s.selection]
+      let parents = [...s.contextIds]
       const names = cfg.agents.map((a) => a.name)
       // Continuing an existing dialogue: whoever spoke last doesn't go first.
       const last = parents.length === 1 ? s.graph.nodes[parents[0]]?.agent?.name : undefined
@@ -543,6 +616,7 @@ export const useStore = create<State>()((set, get) => {
           })
           set({ dialogue: { turn: i + 1, total: cfg.turns } })
           get().select([id])
+          get().adoptSelection([id])
           get().focus(id)
           await get().generate(id)
           const after = get().graph.nodes[id]

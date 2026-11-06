@@ -1,10 +1,11 @@
-import { useEffect } from 'react'
+import { useEffect, useState, type DragEvent } from 'react'
 import { ReactFlowProvider } from '@xyflow/react'
 import { deleteWithUndo, LAST_KEY, useStore } from './store'
-import { loadGraphById, sanitizeGraph } from './lib/persist'
+import { loadGraphById, parseGraphFile, sanitizeGraph, saveGraph } from './lib/persist'
 import { cx } from './lib/util'
 import { TopBar } from './components/TopBar'
 import { Canvas } from './components/Canvas'
+import { ThreadPane } from './components/ThreadPane'
 import { Composer } from './components/Composer'
 import { Inspector } from './components/Inspector'
 import { DialogueModal } from './components/modals/DialogueModal'
@@ -116,9 +117,47 @@ function Toast() {
   )
 }
 
+/** Drag an .arbor.json anywhere onto the app. No picker required. */
+function useGraphDrop() {
+  const [over, setOver] = useState(false)
+  const hasFiles = (e: DragEvent) => Array.from(e.dataTransfer.types).includes('Files')
+  const onDrop = async (e: DragEvent) => {
+    e.preventDefault()
+    setOver(false)
+    const file = e.dataTransfer.files?.[0]
+    if (!file) return
+    try {
+      const g = parseGraphFile(await file.text())
+      await st().saveNow()
+      await saveGraph(g)
+      st().loadGraph(g)
+      st().showToast(`Imported “${g.title}” (${Object.keys(g.nodes).length} nodes)`)
+    } catch (err) {
+      st().showToast(`Could not import: ${err instanceof Error ? err.message : err}`, 'error')
+    }
+  }
+  return {
+    over,
+    bind: {
+      onDragOver: (e: DragEvent) => {
+        if (!hasFiles(e)) return
+        e.preventDefault()
+        setOver(true)
+      },
+      onDragLeave: (e: DragEvent) => {
+        if (!e.currentTarget.contains(e.relatedTarget as Node)) setOver(false)
+      },
+      onDrop: (e: DragEvent) => void onDrop(e),
+    },
+  }
+}
+
 export default function App() {
   const modal = useStore((s) => s.modal)
   const inspectorOpen = useStore((s) => s.inspectorOpen)
+  const view = useStore((s) => s.view)
+  const nodeCount = useStore((s) => s.rfNodes.length)
+  const drop = useGraphDrop()
   useBoot()
   useAutosave()
   useShortcuts()
@@ -126,14 +165,19 @@ export default function App() {
   return (
     <div className="app">
       <TopBar />
-      <div className="main">
+      <div className={cx('main', drop.over && 'dropping')} {...drop.bind}>
+        {drop.over && <div className="drop-overlay">Drop an .arbor.json to import it</div>}
         <div className="stage">
-          <ReactFlowProvider>
-            <Canvas />
-          </ReactFlowProvider>
+          {view === 'canvas' ? (
+            <ReactFlowProvider>
+              <Canvas />
+            </ReactFlowProvider>
+          ) : (
+            <ThreadPane />
+          )}
           <Composer />
         </div>
-        {inspectorOpen && <Inspector />}
+        {inspectorOpen && nodeCount > 0 && <Inspector />}
       </div>
       {modal === 'dialogue' && <DialogueModal />}
       {modal === 'library' && <LibraryModal />}
